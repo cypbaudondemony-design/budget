@@ -1,5 +1,5 @@
 /* Notre Budget — service worker : l'app s'ouvre instantanément, même hors-ligne. */
-const CACHE = 'notre-budget-v1.0.0';
+const CACHE = 'notre-budget-v1.1.0';
 const SHELL = [
   './', 'index.html', 'css/app.css', 'js/app.js', 'js/vendor/chart.umd.min.js', 'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',

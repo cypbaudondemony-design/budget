@@ -6,7 +6,7 @@
    ========================================================= */
 'use strict';
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 
 /* ---------------- Utilitaires ---------------- */
 const $ = (s, el = document) => el.querySelector(s);
@@ -16,6 +16,7 @@ const ymd = (d) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDat
 const todayStr = () => ymd(new Date());
 const curMonth = () => todayStr().slice(0, 7);
 const addMonths = (m, n) => { const [y, mo] = m.split('-').map(Number); const d = new Date(y, mo - 1 + n, 1); return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`; };
+const monthDiff = (a, b) => { const [ay, am] = a.split('-').map(Number), [by, bm] = b.split('-').map(Number); return (by - ay) * 12 + (bm - am); };
 const daysInMonth = (m) => { const [y, mo] = m.split('-').map(Number); return new Date(y, mo, 0).getDate(); };
 const uid = () => (globalThis.crypto && crypto.randomUUID) ? crypto.randomUUID() : 'id-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
 const round2 = (n) => Math.round(n * 100) / 100;
@@ -55,8 +56,10 @@ const DEFAULT_CATS = [
   ['Loyer', '🏠', '#6250d6'], ['Courses', '🛒', '#1baf7a'], ['Carburant', '⛽', '#eb6834'], ['Assurances', '🛡️', '#2a78d6'],
   ['Énergie', '⚡', '#eda100'], ['Internet & mobile', '📱', '#5f6b7a'], ['Santé', '💊', '#e34948'], ['Restaurants', '🍽️', '#e87ba4'],
   ['Loisirs', '🎉', '#008300'], ['Maison', '🛋️', '#2a78d6'], ['Vêtements', '👕', '#e87ba4'], ['Cadeaux', '🎁', '#e34948'],
-  ['Dons & paroisse', '⛪', '#8a6d3b'], ['Divers', '📦', '#5f6b7a'],
+  ['Dons & paroisse', '⛪', '#8a6d3b'], ['Frais bancaires', '🏦', '#5f6b7a'], ['Divers', '📦', '#5f6b7a'],
 ];
+const FREQS = [[1, 'Tous les mois'], [3, 'Tous les 3 mois'], [12, 'Tous les ans']];
+const freqLabel = (f) => (FREQS.find((x) => x[0] === Number(f)) || [0, `Tous les ${f} mois`])[1];
 
 /* ---------------- État ---------------- */
 let cfg = store.get(K.cfg, null);           // { u: url API, t: code } | { demo: true }
@@ -65,6 +68,37 @@ let outbox = store.get(K.outbox, []);       // [{ action, data }]
 const ui = { tab: 'home', mois: curMonth(), filterCat: '', search: '', statCat: '', reorder: false };
 let net = { online: true, busy: false };
 let charts = [];
+
+/* ---------------- Prélèvements automatiques ---------------- */
+const recDue = (r, m) => m >= r.debut && monthDiff(r.debut, m) % (Number(r.freq) || 1) === 0;
+const recDay = (r, m) => Math.min(Number(r.jour) || 1, daysInMonth(m));
+
+/** Crée les dépenses des prélèvements arrivés à échéance (même règle que le serveur : id « rec-<id>-<mois> »). */
+function genRecurring(db, today = todayStr()) {
+  const curM = today.slice(0, 7), d0 = Number(today.slice(8, 10));
+  for (const r of db.recurrentes || []) {
+    if (!r.actif) continue;
+    let m = r.dernier ? addMonths(r.dernier, 1) : r.debut;
+    if (m < r.debut) m = r.debut;
+    while (m <= curM) {
+      if (recDue(r, m)) {
+        const day = recDay(r, m);
+        if (m === curM && day > d0) break;
+        const id = `rec-${r.id}-${m}`;
+        if (!db.depenses.some((x) => x.id === id)) db.depenses.push({ id, date: `${m}-${pad2(day)}`, montant: r.montant, categorieId: r.categorieId, note: r.nom, saisiPar: 'Automatique', recurrenteId: r.id });
+      }
+      r.dernier = m;
+      m = addMonths(m, 1);
+    }
+  }
+}
+
+/** Prélèvements encore à venir dans le mois en cours. */
+function recUpcoming() {
+  const m = curMonth(), d0 = new Date().getDate();
+  return (data.recurrentes || []).filter((r) => r.actif && recDue(r, m) && (!r.dernier || r.dernier < m) && recDay(r, m) > d0)
+    .sort((a, b) => recDay(a, m) - recDay(b, m));
+}
 
 /* ---------------- Mode démo (aperçu sans serveur) ---------------- */
 function rng(seed) { let s = seed >>> 0; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); }
@@ -82,11 +116,7 @@ function buildDemo() {
   for (let k = 0; k < 6; k++) {
     const m = addMonths(start, k);
     const day = (d) => `${m}-${pad2(Math.min(d, daysInMonth(m)))}`;
-    add(day(5), 'Loyer', 750, 'Loyer', 'Cyp');
-    add(day(10), 'Assurances', 118.4, 'Habitation + auto', 'Cyp');
     add(day(8), 'Énergie', 78 + r() * 20, 'EDF');
-    add(day(3), 'Internet & mobile', 44.98, 'Box + forfaits');
-    add(day(1), 'Dons & paroisse', 40, 'Denier / quête');
     const shops = ['Intermarché', 'Leclerc', 'Lidl', 'Marché', 'Boulangerie', 'Carrefour Market'];
     for (let i = 0; i < 9; i++) add(day(1 + Math.floor(r() * 28)), 'Courses', 18 + r() * 75, shops[Math.floor(r() * shops.length)]);
     for (let i = 0; i < 3; i++) add(day(2 + Math.floor(r() * 26)), 'Carburant', 45 + r() * 22, r() < 0.6 ? 'Intermarché (essence)' : 'Total');
@@ -98,7 +128,13 @@ function buildDemo() {
     if (r() < 0.4) add(day(4 + Math.floor(r() * 20)), 'Cadeaux', 15 + r() * 50, 'Anniversaire');
     if (r() < 0.5) add(day(4 + Math.floor(r() * 20)), 'Divers', 5 + r() * 25, 'Poste');
   }
-  return { user: 'Cyp', categories, budgets, depenses, config: { recapEmails: 'cyp@example.com, berenice@example.com', sheetUrl: '' } };
+  const recurrentes = [
+    ['Loyer', 750, 'Loyer', 5, 1], ['Assurance habitation + auto', 118.4, 'Assurances', 10, 1], ['Box + forfaits mobiles', 44.98, 'Internet & mobile', 3, 1],
+    ['Denier / quête', 40, 'Dons & paroisse', 1, 1], ['Frais de tenue de compte', 2.5, 'Frais bancaires', 2, 1], ['Abonnement streaming', 13.99, 'Loisirs', 26, 1],
+  ].map(([nom, montant, cat, jour, freq], i) => ({ id: 'r' + (i + 1), nom, montant, categorieId: id(cat), jour, freq, debut: start, dernier: '', actif: true }));
+  const db = { user: 'Cyp', categories, budgets, depenses, recurrentes, config: { recapEmails: 'cyp@example.com, berenice@example.com', sheetUrl: '' } };
+  genRecurring(db);
+  return db;
 }
 
 const demoApi = {
@@ -110,6 +146,7 @@ const demoApi = {
     await new Promise((r) => setTimeout(r, 120));
     const db = this.db;
     const result = applyOp(db, action, d, true);
+    if (action === 'bootstrap' || action === 'saveRecurrente') genRecurring(db);
     this.save();
     return action === 'bootstrap' ? JSON.parse(JSON.stringify(db)) : result;
   },
@@ -163,6 +200,16 @@ function applyOp(db, action, d, isServer) {
       return { ok: true };
     }
     case 'saveConfig': db.config.recapEmails = d.recapEmails; return { recapEmails: d.recapEmails };
+    case 'saveRecurrente': {
+      db.recurrentes = db.recurrentes || [];
+      const r = db.recurrentes.find((x) => x.id === d.id);
+      const fields = { nom: d.nom, montant: round2(d.montant), categorieId: d.categorieId, jour: Number(d.jour), freq: Number(d.freq) };
+      if (r) Object.assign(r, fields);
+      else db.recurrentes.push({ id: d.id, ...fields, debut: d.debut, dernier: '', actif: true });
+      if (!isServer) genRecurring(db);
+      return { id: d.id };
+    }
+    case 'deleteRecurrente': { const r = (db.recurrentes || []).find((x) => x.id === d.id); if (r) r.actif = false; return { id: d.id }; }
     default: throw serverErr('Action inconnue');
   }
 }
@@ -198,7 +245,7 @@ function flush() {
     }
     net.busy = false; paintSync();
     if (hadServerError) await pull();
-    else render();
+    else renderIfChanged();
   })().finally(() => { flushing = null; });
   return flushing;
 }
@@ -213,7 +260,7 @@ async function pull() {
     if (e.code === 'AUTH') { showSetup('Code d\'accès invalide. Utilise le lien d\'installation.'); return; }
     if (e.offline) net.online = false; else toast('⚠️ ' + e.message);
   } finally { net.busy = false; paintSync(); }
-  render();
+  renderIfChanged();
 }
 
 async function refresh() { await flush(); if (!outbox.length) await pull(); }
@@ -231,6 +278,7 @@ function normalize(d) {
   d.categories = (d.categories || []).map((c) => ({ ...c, couleur: hex.test(c.couleur) ? c.couleur : '#5f6b7a', ordre: Number(c.ordre) || 0, actif: c.actif !== false }));
   d.budgets = (d.budgets || []).map((b) => ({ ...b, montant: Number(b.montant) || 0 }));
   d.depenses = (d.depenses || []).map((x) => ({ ...x, montant: Number(x.montant) || 0, note: x.note || '' }));
+  d.recurrentes = (d.recurrentes || []).map((r) => ({ ...r, montant: Number(r.montant) || 0, jour: Number(r.jour) || 1, freq: Number(r.freq) || 1, actif: r.actif !== false }));
   d.config = d.config || {};
   return d;
 }
@@ -255,6 +303,10 @@ function lignesMois(m) {
 }
 
 /* ---------------- Rendu ---------------- */
+let lastViewKey = '', lastSig = '';
+const dataSig = () => JSON.stringify(data) + '|' + [...pendingIds()].join(',');
+
+/** Redessine l'écran. L'animation d'entrée ne joue qu'au changement d'onglet ou de mois. */
 function render() {
   if (!data) return;
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t.dataset.tab === ui.tab));
@@ -262,11 +314,22 @@ function render() {
   const ml = $('#monthLabel');
   ml.textContent = monthLabel(ui.mois);
   ml.classList.toggle('today', ui.mois === curMonth());
+  const key = ui.tab + '|' + ui.mois;
+  const animate = key !== lastViewKey;
+  lastViewKey = key;
+  lastSig = dataSig();
   charts.forEach((c) => c.destroy()); charts = [];
   const v = $('#view');
   v.innerHTML = ({ home: viewHome, history: viewHistory, stats: viewStats, settings: viewSettings })[ui.tab]();
-  if (ui.tab === 'stats') drawCharts();
+  if (animate && v.firstElementChild) v.firstElementChild.classList.add('view-enter');
+  if (ui.tab === 'stats') drawCharts(animate);
   paintSync();
+}
+
+/** Après une synchro : ne redessine que si quelque chose a réellement changé (évite le « clignotement »). */
+function renderIfChanged() {
+  if (!data) return;
+  if (dataSig() !== lastSig) render(); else paintSync();
 }
 
 function barRow(l) {
@@ -275,10 +338,10 @@ function barRow(l) {
   const over = budget > 0 && spent > budget + 0.004;
   return `<button class="cat-row" data-act="filter-cat" data-id="${c.id}">
     <span class="cat-ico" style="background:${tint(c.couleur)}">${esc(c.emoji)}</span>
-    <span class="cat-name">${esc(c.nom)}${over ? `<span class="badge-over">⚠️ +${eur(spent - budget)}</span>` : ''}</span>
+    <span class="cat-name">${esc(c.nom)}</span>
     <span class="cat-amt num"><b>${eur(spent)}</b>${budget > 0 ? ` / ${eur(budget)}` : ''}</span>
     ${budget > 0
-      ? `<span class="cat-bar"><span class="track"><i style="width:${Math.min(100, pct)}%;background:${over ? 'var(--critical)' : c.couleur}"></i></span><span class="pct num${over ? ' over' : ''}">${pct} %</span></span>`
+      ? `<span class="cat-bar"><span class="track"><i style="width:${Math.min(100, pct)}%;background:${over ? 'var(--critical)' : c.couleur}"></i></span><span class="pct num${over ? ' over' : ''}">${over ? '⚠️ ' : ''}${pct} %</span></span>`
       : `<span class="nolimit">Pas de budget fixé</span>`}
   </button>`;
 }
@@ -287,7 +350,7 @@ function expRow(d, pend) {
   const c = catById(d.categorieId);
   return `<button class="exp" data-act="edit" data-id="${d.id}">
     <span class="ico" style="background:${tint(c.couleur)}">${esc(c.emoji)}</span>
-    <span style="min-width:0"><span class="t">${esc(d.note || c.nom)}</span><span class="s">${esc(c.nom)}${d.saisiPar ? ' · ' + esc(d.saisiPar) : ''}</span></span>
+    <span style="min-width:0"><span class="t">${esc(d.note || c.nom)}</span><span class="s">${esc(c.nom)}${d.recurrenteId ? ' · 🔁 Prélèvement auto' : d.saisiPar ? ' · ' + esc(d.saisiPar) : ''}</span></span>
     <span class="a num">${eur(d.montant)}${pend.has(d.id) ? '<small>⏳ en attente</small>' : ''}</span>
   </button>`;
 }
@@ -304,16 +367,28 @@ function viewHome() {
   const joursRest = isCur ? daysInMonth(m) - new Date().getDate() + 1 : 0;
   const reste = round2(totalBudget - total);
 
-  let html = `<section class="hero view-enter">
+  let html = `<section class="hero">
     <div class="k">Dépensé ${isCur ? 'ce mois-ci' : 'en ' + monthLabel(m).toLowerCase()}</div>
     <div class="big num">${eur(total)}</div>
     <div class="sub">${totalBudget > 0 ? `sur ${eurR(totalBudget)} de budget` : 'Aucun budget fixé pour ce mois'}</div>`;
   if (totalBudget > 0) {
     html += `<div class="bar${over ? ' over' : ''}"><i style="width:${Math.min(100, pct)}%"></i></div>
     <div class="row"><span>${over ? '⚠️ Dépassement' : 'Reste'} <b class="num">${eur(Math.abs(reste))}</b></span><span><b class="num">${pct} %</b> utilisé</span></div>`;
-    if (isCur && !over && joursRest > 0) html += `<span class="pill">📅 ${joursRest} jour${joursRest > 1 ? 's' : ''} restant${joursRest > 1 ? 's' : ''} · ≈ ${eurR(reste / joursRest)} / jour</span>`;
+    const upTot = isCur ? round2(recUpcoming().reduce((s, r) => s + r.montant, 0)) : 0;
+    const libre = round2(reste - upTot);
+    if (isCur && !over && joursRest > 0) html += `<span class="pill">📅 ${joursRest} jour${joursRest > 1 ? 's' : ''} restant${joursRest > 1 ? 's' : ''} · ≈ ${eurR(Math.max(0, libre) / joursRest)} / jour</span>`;
+    if (upTot > 0) html += `<span class="pill">🔁 ${eur(upTot)} de prélèvements à venir</span>`;
   }
   html += `</section>`;
+
+  const up = isCur ? recUpcoming() : [];
+  if (up.length) {
+    html += `<div class="section-title">🔁 Prélèvements à venir <span class="right" style="color:var(--muted)">${eur(round2(up.reduce((s, r) => s + r.montant, 0)))}</span></div>
+    <div class="card list-card">${up.map((r) => { const c = catById(r.categorieId); return `<div class="exp" style="cursor:default">
+      <span class="ico" style="background:${tint(c.couleur)}">${esc(c.emoji)}</span>
+      <span style="min-width:0"><span class="t">${esc(r.nom)}</span><span class="s">le ${recDay(r, m)} · ${esc(c.nom)}</span></span>
+      <span class="a num" style="color:var(--ink-2)">${eur(r.montant)}</span></div>`; }).join('')}</div>`;
+  }
 
   if (!data.budgets.some((b) => b.montant > 0)) {
     html += `<button class="card" data-act="tab" data-tab="settings" style="display:flex;gap:12px;align-items:center;width:100%;text-align:left">
@@ -356,7 +431,7 @@ function historyList() {
 function viewHistory() {
   const used = new Set(depMois(ui.mois).map((d) => d.categorieId));
   const cats = sortedCats().filter((c) => c.actif || used.has(c.id));
-  return `<div class="view-enter"><input class="search" type="search" placeholder="Rechercher (note, catégorie, montant)" value="${esc(ui.search)}" data-input="search" enterkeyhint="search">
+  return `<div><input class="search" type="search" placeholder="Rechercher (note, catégorie, montant)" value="${esc(ui.search)}" data-input="search" enterkeyhint="search">
   <div class="chips"><button class="chip${!ui.filterCat ? ' on' : ''}" data-act="filter" data-id="">Toutes</button>
   ${cats.map((c) => `<button class="chip${ui.filterCat === c.id ? ' on' : ''}" data-act="filter" data-id="${c.id}">${esc(c.emoji)} ${esc(c.nom)}</button>`).join('')}</div>
   <div id="histList">${historyList()}</div></div>`;
@@ -374,7 +449,7 @@ function viewStats() {
   const cats = activeCats();
   if (!ui.statCat || !data.categories.some((c) => c.id === ui.statCat)) ui.statCat = (cats[0] || {}).id || '';
 
-  return `<div class="view-enter">
+  return `<div>
   <div class="tiles">
     <div class="tile-stat"><div class="k">Moyenne / jour</div><div class="v num">${eur(round2(total / Math.max(1, days)))}</div><div class="d">sur ${days} jour${days > 1 ? 's' : ''}</div></div>
     <div class="tile-stat"><div class="k">vs mois précédent</div><div class="v num">${prevTotal ? (delta >= 0 ? '+' : '−') + eurR(Math.abs(delta)) : '—'}</div>
@@ -400,9 +475,10 @@ function viewStats() {
 
 function cssVar(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
 
-function drawCharts() {
-  if (!window.Chart) { setTimeout(drawCharts, 150); return; }
+function drawCharts(animate) {
+  if (!window.Chart) { setTimeout(() => drawCharts(animate), 150); return; }
   const C = window.Chart;
+  C.defaults.animation = animate ? { duration: 600 } : false;
   const ink2 = cssVar('--ink-2'), muted = cssVar('--muted'), line = cssVar('--line'), surface = cssVar('--surface'), primary = cssVar('--primary');
   C.defaults.font.family = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
   C.defaults.color = muted;
@@ -469,7 +545,8 @@ function viewSettings() {
   const all = sortedCats().filter((c) => c.actif);
   const totalBudget = round2(all.reduce((s, c) => s + budgetPour(c.id, m), 0));
   const archived = sortedCats().filter((c) => !c.actif);
-  return `<div class="view-enter">
+  const recs = (data.recurrentes || []).filter((r) => r.actif).sort((a, b) => a.jour - b.jour);
+  return `<div>
   <div class="section-title">Catégories & budgets
     <button class="right" data-act="reorder">${ui.reorder ? '✓ Terminé' : '↕ Réorganiser'}</button></div>
   <div class="card">
@@ -484,6 +561,18 @@ function viewSettings() {
     </div>`).join('')}
     <button class="btn ghost" style="margin-top:10px" data-act="new-cat">＋ Nouvelle catégorie</button>
     ${archived.length ? `<p class="hint">Archivées (gardées pour l'historique) : ${archived.map((c) => esc(c.emoji + ' ' + c.nom)).join(', ')}</p>` : ''}
+  </div>
+
+  <div class="section-title">🔁 Prélèvements automatiques</div>
+  <div class="card">
+    <p class="hint" style="margin:0 2px 8px">Ajoutés tout seuls à la bonne date : loyer, forfaits, assurances, frais bancaires…</p>
+    ${recs.length ? recs.map((r) => { const c = catById(r.categorieId); return `<div class="set-row">
+      <span class="ico" style="background:${tint(c.couleur)}">${esc(c.emoji)}</span>
+      <span class="t">${esc(r.nom)}<small>${eur(r.montant)} · le ${r.jour} · ${esc(freqLabel(r.freq).toLowerCase())}</small></span>
+      <button class="btn small ghost" data-act="edit-rec" data-id="${r.id}">Modifier</button></div>`; }).join('')
+      : `<div class="empty" style="padding:14px"><div class="e">🔁</div>Aucun prélèvement pour l'instant</div>`}
+    ${recs.length ? `<div class="set-row"><span class="ico" style="background:var(--primary-soft)">Σ</span><span class="t">Total par mois<small>équivalent mensuel</small></span><span class="v num" style="font-weight:800;color:var(--ink)">${eur(round2(recs.reduce((s, r) => s + r.montant / (r.freq || 1), 0)))}</span></div>` : ''}
+    <button class="btn ghost" style="margin-top:10px" data-act="new-rec">＋ Nouveau prélèvement</button>
   </div>
 
   <div class="section-title">📧 Récap mensuel</div>
@@ -620,6 +709,51 @@ function saveCat() {
   toast(catEdit.isNew ? `✓ ${c.emoji} ${nom} créée` : '✓ Catégorie enregistrée');
 }
 
+/* ---------------- Feuille : prélèvement automatique ---------------- */
+let recEdit = null;
+function openRec(r) {
+  const m = curMonth();
+  recEdit = r
+    ? { id: r.id, isNew: false, nom: r.nom, montant: String(r.montant).replace('.', ','), categorieId: r.categorieId, jour: String(r.jour), freq: r.freq, debut: r.debut }
+    : { id: uid(), isNew: true, nom: '', montant: '', categorieId: '', jour: String(new Date().getDate()), freq: 1, debut: m };
+  paintRec();
+  if (!sheet.open) sheet.showModal();
+}
+function paintRec() {
+  const m = curMonth(), next = addMonths(m, 1);
+  const cats = activeCats();
+  if (!recEdit.isNew && !cats.some((c) => c.id === recEdit.categorieId)) cats.push(catById(recEdit.categorieId));
+  const d0 = new Date().getDate(), jour = Number(recEdit.jour) || 0;
+  sheet.innerHTML = `<div class="sheet-in entry"><div class="grab"></div>
+    <div class="sheet-head"><h3 id="sheetTitle">${recEdit.isNew ? 'Nouveau prélèvement' : 'Modifier le prélèvement'}</h3><button class="x" data-act="close" aria-label="Fermer">✕</button></div>
+    <label class="field"><span>Nom</span><input type="text" maxlength="40" value="${esc(recEdit.nom)}" data-input="rec-nom" placeholder="ex. Forfait mobile, Frais bancaires" autocomplete="off"></label>
+    <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:10px">
+      <label class="field"><span>Montant</span><span class="money-input"><input type="text" inputmode="decimal" value="${esc(recEdit.montant)}" data-input="rec-montant" placeholder="0" autocomplete="off"><span>€</span></span></label>
+      <label class="field"><span>Jour du mois</span><span class="money-input"><input type="text" inputmode="numeric" maxlength="2" value="${esc(recEdit.jour)}" data-input="rec-jour" autocomplete="off"><span>du mois</span></span></label>
+    </div>
+    <div class="field"><span>Fréquence</span><div class="seg">${FREQS.map(([f, l]) => `<button class="${Number(recEdit.freq) === f ? 'on' : ''}" data-act="rec-freq" data-v="${f}">${l}</button>`).join('')}</div></div>
+    ${recEdit.isNew ? `<div class="field"><span>Premier prélèvement</span>
+      <div class="seg"><button class="${recEdit.debut === m ? 'on' : ''}" data-act="rec-from" data-v="${m}">${monthLabel(m)}</button><button class="${recEdit.debut === next ? 'on' : ''}" data-act="rec-from" data-v="${next}">${monthLabel(next)}</button></div>
+      <span class="hint">${recEdit.debut === m && jour && jour <= d0 ? `Le ${jour} est passé : la dépense de ce mois-ci sera ajoutée tout de suite.` : 'La dépense sera ajoutée automatiquement le jour venu.'}</span></div>` : `<p class="hint" style="margin:-4px 2px 12px">Les changements s'appliquent aux prochains prélèvements ; les dépenses déjà créées ne bougent pas.</p>`}
+    <div class="field"><span>Catégorie</span>
+      <div class="cat-grid">${cats.map((c) => `<button class="tile${recEdit.categorieId === c.id ? ' on' : ''}" style="--c:${c.couleur}" data-act="rec-cat" data-id="${c.id}"><span class="em">${esc(c.emoji)}</span>${esc(c.nom)}</button>`).join('')}</div></div>
+    <div class="sheet-actions">${recEdit.isNew ? '' : `<button class="btn danger icon" data-act="delete-rec" aria-label="Arrêter ce prélèvement">🗑️</button>`}
+    <button class="btn primary" data-act="save-rec">${recEdit.isNew ? 'Créer le prélèvement' : 'Enregistrer'}</button></div>
+  </div>`;
+}
+function paintRecKeep() { const y = sheet.scrollTop; paintRec(); sheet.scrollTop = y; }
+function saveRec() {
+  const nom = recEdit.nom.trim(), montant = round2(parseAmount(recEdit.montant)), jour = parseInt(recEdit.jour, 10);
+  if (!nom) return toast('Donne un nom au prélèvement');
+  if (!(montant > 0)) return toast('Indique le montant');
+  if (!(jour >= 1 && jour <= 31)) return toast('Jour du mois entre 1 et 31');
+  if (!recEdit.categorieId) return toast('Choisis une catégorie');
+  const isNew = recEdit.isNew;
+  sheet.close();
+  commit('saveRecurrente', { id: recEdit.id, nom, montant, categorieId: recEdit.categorieId, jour, freq: Number(recEdit.freq), debut: recEdit.debut });
+  toast(isNew ? `✓ 🔁 ${nom} : ${eur(montant)} le ${jour}` : '✓ Prélèvement modifié');
+}
+
 /* ---------------- Toast ---------------- */
 let toastTimer;
 function toast(msg, actionLabel, action) {
@@ -671,6 +805,15 @@ document.addEventListener('click', (e) => {
     case 'cat-color': catEdit.couleur = el.dataset.v; paintCatKeep(); break;
     case 'cat-emoji': catEdit.emoji = el.dataset.v; paintCatKeep(); break;
     case 'save-cat': saveCat(); break;
+    case 'new-rec': openRec(null); break;
+    case 'edit-rec': openRec((data.recurrentes || []).find((r) => r.id === id)); break;
+    case 'rec-cat': recEdit.categorieId = id; sheet.querySelectorAll('.tile').forEach((t) => t.classList.toggle('on', t.dataset.id === id)); break;
+    case 'rec-freq': recEdit.freq = Number(el.dataset.v); paintRecKeep(); break;
+    case 'rec-from': recEdit.debut = el.dataset.v; paintRecKeep(); break;
+    case 'save-rec': saveRec(); break;
+    case 'delete-rec':
+      if (confirm(`Arrêter le prélèvement « ${recEdit.nom} » ?\n\nLes dépenses déjà créées restent dans l'historique.`)) { const rid = recEdit.id; sheet.close(); commit('deleteRecurrente', { id: rid }); toast('🔁 Prélèvement arrêté'); }
+      break;
     case 'delete-cat': {
       const used = data.depenses.some((d) => d.categorieId === catEdit.id);
       const msg = used ? `Supprimer « ${catEdit.nom} » ?\n\nElle a déjà des dépenses : elle sera archivée (plus proposée à la saisie) et l'historique sera conservé.` : `Supprimer « ${catEdit.nom} » ?`;
@@ -707,6 +850,9 @@ document.addEventListener('input', (e) => {
   else if (k === 'date') { if (e.target.value) { entry.date = e.target.value; paintEntry(); } }
   else if (k === 'cat-nom') { catEdit.nom = e.target.value; $('#pvName').textContent = catEdit.nom || 'Nom de la catégorie'; }
   else if (k === 'cat-budget') catEdit.budget = e.target.value;
+  else if (k === 'rec-nom') recEdit.nom = e.target.value;
+  else if (k === 'rec-montant') recEdit.montant = e.target.value;
+  else if (k === 'rec-jour') { recEdit.jour = e.target.value.replace(/\D/g, ''); }
 });
 
 // Clic sur le fond : fermeture (repli pour Safari, qui ne gère pas closedby)

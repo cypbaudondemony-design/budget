@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Notre Budget</title>
+  <meta name="description" content="Budget du foyer : dépenses, budgets par catégorie et statistiques.">
+  <meta name="theme-color" content="#f5f4fb" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0f0e16" media="(prefers-color-scheme: dark)">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Budget">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png" type="image/png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div id="setup" class="setup" hidden></div>
+
+  <div id="app" hidden>
+    <header class="topbar">
+      <div class="brand"><span class="brand-logo" aria-hidden="true">€</span>Notre Budget</div>
+      <div class="spacer"></div>
+      <button id="sync" class="sync" data-act="refresh" aria-label="Synchroniser"><span class="dot"></span><span class="lbl">À jour</span></button>
+    </header>
+    <div id="monthbar" class="monthbar">
+      <button class="arrow" data-act="month" data-d="-1" aria-label="Mois précédent">‹</button>
+      <button class="label" data-act="month-today" id="monthLabel"></button>
+      <button class="arrow" data-act="month" data-d="1" aria-label="Mois suivant">›</button>
+    </div>
+    <main id="view"></main>
+
+    <nav class="tabbar" aria-label="Navigation">
+      <div class="inner">
+        <button class="tab" data-act="tab" data-tab="home">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg>
+          Accueil</button>
+        <button class="tab" data-act="tab" data-tab="history">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13"/><circle cx="3.5" cy="6" r="1"/><circle cx="3.5" cy="12" r="1"/><circle cx="3.5" cy="18" r="1"/></svg>
+          Dépenses</button>
+        <button class="fab" data-act="new" aria-label="Ajouter une dépense">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+        <button class="tab" data-act="tab" data-tab="stats">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9v9z"/><path d="M15 3.5A9 9 0 0 1 20.5 9H15z"/></svg>
+          Stats</button>
+        <button class="tab" data-act="tab" data-tab="settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>
+          Réglages</button>
+      </div>
+    </nav>
+  </div>
+
+  <dialog id="sheet" class="sheet" closedby="any" aria-labelledby="sheetTitle"></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+
+  <script src="js/vendor/chart.umd.min.js" defer></script>
+  <script src="js/app.js" defer></script>
+</body>
+</html>

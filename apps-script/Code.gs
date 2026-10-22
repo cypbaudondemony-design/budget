@@ -6,6 +6,7 @@
  *  Rôle :
  *   - Base de données : onglets Dépenses, Catégories, Budgets, Config
  *   - API JSON appelée par l'app (PWA) hébergée sur GitHub Pages
+ *   - Prélèvements automatiques (onglet Récurrentes), générés chaque jour
  *   - Récap mensuel par e-mail (1er du mois, 8 h)
  *
  *  Mise en route (une seule fois) :
@@ -14,6 +15,9 @@
  *        Exécuter en tant que : Moi
  *        Qui a accès : Tout le monde
  *   3. Menu 💰 Budget › 2. Liens d'installation
+ *
+ *  Après une mise à jour de ce fichier : relancer « 1. Initialiser le classeur »
+ *  (rien n'est effacé) puis Déployer › Gérer les déploiements › Nouvelle version.
  * ============================================================
  */
 
@@ -27,13 +31,15 @@ const SH = {
   CATEGORIES: 'Catégories',
   BUDGETS: 'Budgets',
   CONFIG: 'Config',
+  RECURRENTES: 'Récurrentes',
 };
 
 const HEADERS = {
-  [SH.DEPENSES]: ['ID', 'Date', 'Montant (€)', 'Catégorie ID', 'Catégorie', 'Note', 'Saisi par', 'Créé le', 'Modifié le'],
+  [SH.DEPENSES]: ['ID', 'Date', 'Montant (€)', 'Catégorie ID', 'Catégorie', 'Note', 'Saisi par', 'Créé le', 'Modifié le', 'Prélèvement ID'],
   [SH.CATEGORIES]: ['ID', 'Nom', 'Emoji', 'Couleur', 'Ordre', 'Active'],
   [SH.BUDGETS]: ['Catégorie ID', 'Catégorie', 'À partir de (AAAA-MM)', 'Budget mensuel (€)'],
   [SH.CONFIG]: ['Clé', 'Valeur'],
+  [SH.RECURRENTES]: ['ID', 'Nom', 'Montant (€)', 'Catégorie ID', 'Catégorie', 'Jour du mois', 'Fréquence (mois)', 'Premier mois (AAAA-MM)', 'Dernier mois traité', 'Active'],
 };
 
 const CATEGORIES_DEFAUT = [
@@ -50,6 +56,7 @@ const CATEGORIES_DEFAUT = [
   ['Vêtements', '👕', '#e87ba4'],
   ['Cadeaux', '🎁', '#e34948'],
   ['Dons & paroisse', '⛪', '#8a6d3b'],
+  ['Frais bancaires', '🏦', '#5f6b7a'],
   ['Divers', '📦', '#5f6b7a'],
 ];
 
@@ -86,6 +93,9 @@ function initialiser() {
   dep.getRange('H:I').setNumberFormat('dd/mm/yyyy hh:mm');
   ss.getSheetByName(SH.BUDGETS).getRange('C:C').setNumberFormat('@');
   ss.getSheetByName(SH.BUDGETS).getRange('D:D').setNumberFormat('#,##0.00 €');
+  const rec = ss.getSheetByName(SH.RECURRENTES);
+  rec.getRange('C:C').setNumberFormat('#,##0.00 €');
+  rec.getRange('H:I').setNumberFormat('@');
 
   // Catégories par défaut (seulement si vide)
   const cat = ss.getSheetByName(SH.CATEGORIES);
@@ -110,6 +120,10 @@ function initialiser() {
     if (t.getHandlerFunction() === 'envoyerRecapMensuel') ScriptApp.deleteTrigger(t);
   });
   ScriptApp.newTrigger('envoyerRecapMensuel').timeBased().onMonthDay(1).atHour(8).inTimezone(TZ).create();
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'genererRecurrentes') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('genererRecurrentes').timeBased().everyDays(1).atHour(6).inTimezone(TZ).create();
 
   const defaut = ss.getSheetByName('Feuille 1') || ss.getSheetByName('Sheet1');
   if (defaut && defaut.getLastRow() === 0 && ss.getSheets().length > 1) ss.deleteSheet(defaut);
@@ -176,6 +190,11 @@ function doPost(e) {
   let req;
   try { req = JSON.parse(e.postData.contents); } catch (err) { return json_({ ok: false, error: 'Requête invalide' }); }
 
+  if (req.action === 'login') {
+    try { return json_({ ok: true, data: login_(req.data || {}) }); }
+    catch (err) { return json_({ ok: false, error: String(err && err.message || err) }); }
+  }
+
   const users = JSON.parse(PropertiesService.getScriptProperties().getProperty('USERS') || '{}');
   const user = users[req.token];
   if (!user) return json_({ ok: false, error: 'Code d\'accès invalide', code: 'AUTH' });
@@ -190,6 +209,9 @@ function doPost(e) {
     reorderCategories: function (d) { return reorderCategories_(d.ids); },
     setBudget: function (d) { return setBudget_(d); },
     saveConfig: function (d) { return saveConfig_(d); },
+    saveRecurrente: function (d) { return saveRecurrente_(d); },
+    setCredentials: function (d) { return setCredentials_(d, user); },
+    deleteRecurrente: function (d) { return deleteRecurrente_(d.id); },
   };
   const fn = actions[req.action];
   if (!fn) return json_({ ok: false, error: 'Action inconnue : ' + req.action });
@@ -211,11 +233,15 @@ function json_(obj) {
 
 // ---- Lecture ---------------------------------------------------
 function bootstrap_(user) {
+  const lock = LockService.getScriptLock();
+  if (lock.tryLock(10000)) { try { genererRecurrentes_(); } finally { lock.releaseLock(); } }
   return {
     user: user,
     categories: readCategories_(),
     budgets: readBudgets_(),
     depenses: readDepenses_(),
+    recurrentes: readRecurrentes_(),
+    account: { email: emailPour_(user) },
     config: { recapEmails: getConfig_('recapEmails') || '', sheetUrl: SpreadsheetApp.getActive().getUrl() },
     serverTime: new Date().toISOString(),
   };
@@ -243,7 +269,18 @@ function readBudgets_() {
 
 function readDepenses_() {
   return rows_(SH.DEPENSES).filter(function (r) { return r[0]; }).map(function (r) {
-    return { id: String(r[0]), date: dateStr_(r[1]), montant: Number(r[2]) || 0, categorieId: String(r[3]), note: String(r[5] || ''), saisiPar: String(r[6] || '') };
+    const o = { id: String(r[0]), date: dateStr_(r[1]), montant: Number(r[2]) || 0, categorieId: String(r[3]), note: String(r[5] || ''), saisiPar: String(r[6] || '') };
+    if (r[9]) o.recurrenteId = String(r[9]);
+    return o;
+  });
+}
+
+function readRecurrentes_() {
+  const sh = SpreadsheetApp.getActive().getSheetByName(SH.RECURRENTES);
+  if (!sh) return []; // classeur pas encore mis à jour
+  return rows_(SH.RECURRENTES).filter(function (r) { return r[0]; }).map(function (r) {
+    return { id: String(r[0]), nom: String(r[1]), montant: Number(r[2]) || 0, categorieId: String(r[3]), jour: Number(r[5]) || 1, freq: Number(r[6]) || 1,
+      debut: moisStr_(r[7]), dernier: r[8] ? moisStr_(r[8]) : '', actif: r[9] !== false && String(r[9]).toUpperCase() !== 'FALSE' };
   });
 }
 
@@ -254,7 +291,7 @@ function addDepense_(d, user) {
   const id = d.id || uid_();
   if (findRow_(sh, id)) return { id: id, duplicate: true }; // idempotent (file d'attente hors-ligne)
   const now = new Date();
-  sh.appendRow([id, parseDate_(d.date), round2_(d.montant), d.categorieId, nomCategorie_(d.categorieId), d.note || '', user, now, now]);
+  sh.appendRow([id, parseDate_(d.date), round2_(d.montant), d.categorieId, nomCategorie_(d.categorieId), d.note || '', user, now, now, '']);
   return { id: id, saisiPar: user };
 }
 
@@ -341,6 +378,136 @@ function saveConfig_(d) {
     setConfig_('recapEmails', list.join(', '));
   }
   return { recapEmails: getConfig_('recapEmails') };
+}
+
+// ---- Identifiants (e-mail + mot de passe) ------------------------
+// Stockés dans les propriétés du script (jamais dans le classeur) : sel + empreinte HMAC-SHA256 itérée.
+function comptes_() { return JSON.parse(PropertiesService.getScriptProperties().getProperty('ACCOUNTS') || '{}'); }
+function emailPour_(user) {
+  const acc = comptes_();
+  return Object.keys(acc).filter(function (e) { return acc[e].user === user; })[0] || '';
+}
+function empreinte_(salt, pwd) {
+  let h = salt + ':' + pwd;
+  for (let i = 0; i < 300; i++) h = Utilities.base64Encode(Utilities.computeHmacSha256Signature(h, salt));
+  return h;
+}
+
+function setCredentials_(d, user) {
+  const email = String(d.email || '').trim().toLowerCase();
+  const pwd = String(d.password || '');
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw new Error('Adresse e-mail invalide');
+  if (pwd.length < 8) throw new Error('Mot de passe trop court (8 caractères minimum)');
+  const acc = comptes_();
+  if (acc[email] && acc[email].user !== user) throw new Error('Cet e-mail est déjà utilisé par l\'autre compte');
+  Object.keys(acc).forEach(function (e) { if (acc[e].user === user) delete acc[e]; });
+  const salt = Utilities.getUuid();
+  acc[email] = { user: user, salt: salt, hash: empreinte_(salt, pwd) };
+  PropertiesService.getScriptProperties().setProperty('ACCOUNTS', JSON.stringify(acc));
+  return { email: email };
+}
+
+/** Connexion : renvoie le code d'accès de la personne. 5 essais ratés = blocage 15 min. */
+function login_(d) {
+  const email = String(d.email || '').trim().toLowerCase();
+  const pwd = String(d.password || '');
+  const cache = CacheService.getScriptCache();
+  const key = 'echecs:' + email;
+  const echecs = Number(cache.get(key) || 0);
+  if (echecs >= 5) throw new Error('Trop d\'essais. Réessaie dans 15 minutes.');
+  const a = comptes_()[email];
+  if (!a || empreinte_(a.salt, pwd) !== a.hash) {
+    cache.put(key, String(echecs + 1), 900);
+    Utilities.sleep(400);
+    throw new Error('E-mail ou mot de passe incorrect.');
+  }
+  cache.remove(key);
+  const users = JSON.parse(PropertiesService.getScriptProperties().getProperty('USERS') || '{}');
+  const token = Object.keys(users).filter(function (t) { return users[t] === a.user; })[0];
+  if (!token) throw new Error('Compte introuvable : relance « Initialiser le classeur ».');
+  return { token: token, user: a.user };
+}
+
+// ---- Prélèvements automatiques ---------------------------------
+function saveRecurrente_(d) {
+  const nom = String(d.nom || '').trim();
+  const jour = Number(d.jour), freq = Number(d.freq) || 1;
+  if (!nom) throw new Error('Nom du prélèvement vide');
+  if (!(Number(d.montant) > 0)) throw new Error('Montant invalide');
+  if (!(jour >= 1 && jour <= 31)) throw new Error('Jour du mois invalide');
+  if ([1, 3, 6, 12].indexOf(freq) < 0) throw new Error('Fréquence invalide');
+  if (!d.categorieId) throw new Error('Catégorie manquante');
+  const sh = SpreadsheetApp.getActive().getSheetByName(SH.RECURRENTES);
+  if (!sh) throw new Error('Onglet « Récurrentes » manquant : relance « Initialiser le classeur » depuis le Sheet');
+  const row = findRow_(sh, d.id);
+  if (row) {
+    sh.getRange(row, 2, 1, 6).setValues([[nom, round2_(d.montant), d.categorieId, nomCategorie_(d.categorieId), jour, freq]]);
+  } else {
+    if (!/^\d{4}-\d{2}$/.test(d.debut || '')) throw new Error('Premier mois invalide');
+    sh.appendRow([d.id || uid_(), nom, round2_(d.montant), d.categorieId, nomCategorie_(d.categorieId), jour, freq, '', '', true]);
+    sh.getRange(sh.getLastRow(), 8, 1, 2).setNumberFormat('@').setValues([[d.debut, '']]);
+  }
+  genererRecurrentes_();
+  return { id: d.id };
+}
+
+function deleteRecurrente_(id) {
+  const sh = SpreadsheetApp.getActive().getSheetByName(SH.RECURRENTES);
+  const row = sh ? findRow_(sh, id) : 0;
+  if (row) sh.getRange(row, 10).setValue(false);
+  return { id: id };
+}
+
+/** Déclencheur quotidien (6 h) : crée les dépenses des prélèvements arrivés à échéance. */
+function genererRecurrentes() {
+  const lock = LockService.getScriptLock();
+  lock.waitLock(30000);
+  try { genererRecurrentes_(); } finally { lock.releaseLock(); }
+}
+
+function addMois_(m, n) {
+  const p = m.split('-').map(Number);
+  const d = new Date(p[0], p[1] - 1 + n, 1, 12);
+  return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2);
+}
+function ecartMois_(a, b) {
+  const x = a.split('-').map(Number), y = b.split('-').map(Number);
+  return (y[0] - x[0]) * 12 + (y[1] - x[1]);
+}
+
+/** Même règle que l'app : une dépense « rec-<id>-<AAAA-MM> » par échéance, jamais recréée si on l'a supprimée. */
+function genererRecurrentes_() {
+  const ss = SpreadsheetApp.getActive();
+  const sh = ss.getSheetByName(SH.RECURRENTES);
+  if (!sh || sh.getLastRow() < 2) return 0;
+  const today = Utilities.formatDate(new Date(), TZ, 'yyyy-MM-dd');
+  const curM = today.slice(0, 7), d0 = Number(today.slice(8, 10));
+  const dep = ss.getSheetByName(SH.DEPENSES);
+  const recs = readRecurrentes_();
+  let created = 0;
+  recs.forEach(function (r) {
+    if (!r.actif || !/^\d{4}-\d{2}$/.test(r.debut)) return;
+    let m = r.dernier ? addMois_(r.dernier, 1) : r.debut;
+    if (m < r.debut) m = r.debut;
+    let dernier = r.dernier;
+    while (m <= curM) {
+      if (ecartMois_(r.debut, m) % r.freq === 0) {
+        const p = m.split('-').map(Number);
+        const day = Math.min(r.jour, new Date(p[0], p[1], 0).getDate());
+        if (m === curM && day > d0) break;
+        const id = 'rec-' + r.id + '-' + m;
+        if (!findRow_(dep, id)) {
+          const now = new Date();
+          dep.appendRow([id, new Date(p[0], p[1] - 1, day, 12), r.montant, r.categorieId, nomCategorie_(r.categorieId), r.nom, 'Automatique', now, now, r.id]);
+          created++;
+        }
+      }
+      dernier = m;
+      m = addMois_(m, 1);
+    }
+    if (dernier !== r.dernier) { const row = findRow_(sh, r.id); if (row) sh.getRange(row, 9).setNumberFormat('@').setValue(dernier); }
+  });
+  return created;
 }
 
 // ---- Récap mensuel --------------------------------------------

@@ -6,9 +6,9 @@
    ========================================================= */
 'use strict';
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.2.1';
 // Adresse du serveur Apps Script (pas secrète : sans identifiant ni code, il refuse tout).
-const DEFAULT_API = 'https://script.google.com/macros/s/AKfycbzxgdJSIovZ5OJTb8YvwsLlY7WJDn07dv3XFBCmKWDmEDxpaJ0f/exec';
+const DEFAULT_API = 'https://script.google.com/macros/s/AKfycbwZ-t2Vs930GiB1xjQMY5j5AYCWMv_J56_DEmmyZOPy5qCjnp8y8RSfbW6Ul_hCgg7Dtw/exec';
 
 /* ---------------- Utilitaires ---------------- */
 const $ = (s, el = document) => el.querySelector(s);
@@ -50,7 +50,17 @@ const store = {
   del(k) { delete mem[k]; try { localStorage.removeItem(k); } catch (e) {} },
 };
 const K = { cfg: 'nb.cfg', state: 'nb.state', outbox: 'nb.outbox', demo: 'nb.demo', api: 'nb.api' };
-const apiUrl = () => (cfg && cfg.u) || store.get(K.api, '') || DEFAULT_API;
+// L'adresse officielle du serveur vient de config.json (modifiable sur GitHub sans toucher au code).
+let REMOTE_API = store.get('nb.remoteApi', '');
+const apiUrl = () => REMOTE_API || (cfg && cfg.u) || store.get(K.api, '') || DEFAULT_API;
+async function loadRemoteConfig() {
+  try {
+    const r = await fetch('config.json?ts=' + Date.now(), { cache: 'no-store' });
+    if (!r.ok) return;
+    const j = await r.json();
+    if (/^https:\/\/script\.google\.com\/.+\/exec$/.test(j.api || '')) { REMOTE_API = j.api; store.set('nb.remoteApi', j.api); }
+  } catch (e) {}
+}
 
 /* ---------------- Constantes UI ---------------- */
 const COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948', '#8a6d3b', '#5f6b7a'];
@@ -1028,7 +1038,8 @@ async function start() {
 }
 
 /* ---------------- Démarrage ---------------- */
-(function init() {
+(async function init() {
+  await loadRemoteConfig();
   const fromHash = readHashConfig();
   if (fromHash) { cfg = fromHash; store.set(K.cfg, cfg); store.set(K.api, cfg.u); data = null; store.del(K.state); outbox = []; store.set(K.outbox, outbox); }
   if ((/[?&]demo=1/.test(location.search) || window.__DEMO__) && !fromHash) { cfg = { demo: true }; store.set(K.cfg, cfg); }

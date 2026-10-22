@@ -6,7 +6,9 @@
    ========================================================= */
 'use strict';
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
+// Adresse du serveur Apps Script (pas secrète : sans identifiant ni code, il refuse tout).
+const DEFAULT_API = 'https://script.google.com/macros/s/AKfycbzxgdJSIovZ5OJTb8YvwsLlY7WJDn07dv3XFBCmKWDmEDxpaJ0f/exec';
 
 /* ---------------- Utilitaires ---------------- */
 const $ = (s, el = document) => el.querySelector(s);
@@ -47,7 +49,8 @@ const store = {
   set(k, v) { mem[k] = v; try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
   del(k) { delete mem[k]; try { localStorage.removeItem(k); } catch (e) {} },
 };
-const K = { cfg: 'nb.cfg', state: 'nb.state', outbox: 'nb.outbox', demo: 'nb.demo' };
+const K = { cfg: 'nb.cfg', state: 'nb.state', outbox: 'nb.outbox', demo: 'nb.demo', api: 'nb.api' };
+const apiUrl = () => (cfg && cfg.u) || store.get(K.api, '') || DEFAULT_API;
 
 /* ---------------- Constantes UI ---------------- */
 const COLORS = ['#2a78d6', '#eb6834', '#1baf7a', '#eda100', '#e87ba4', '#008300', '#6250d6', '#e34948', '#8a6d3b', '#5f6b7a'];
@@ -132,7 +135,7 @@ function buildDemo() {
     ['Loyer', 750, 'Loyer', 5, 1], ['Assurance habitation + auto', 118.4, 'Assurances', 10, 1], ['Box + forfaits mobiles', 44.98, 'Internet & mobile', 3, 1],
     ['Denier / quête', 40, 'Dons & paroisse', 1, 1], ['Frais de tenue de compte', 2.5, 'Frais bancaires', 2, 1], ['Abonnement streaming', 13.99, 'Loisirs', 26, 1],
   ].map(([nom, montant, cat, jour, freq], i) => ({ id: 'r' + (i + 1), nom, montant, categorieId: id(cat), jour, freq, debut: start, dernier: '', actif: true }));
-  const db = { user: 'Cyp', categories, budgets, depenses, recurrentes, config: { recapEmails: 'cyp@example.com, berenice@example.com', sheetUrl: '' } };
+  const db = { user: 'Cyp', account: { email: 'demo@exemple.fr' }, categories, budgets, depenses, recurrentes, config: { recapEmails: 'cyp@example.com, berenice@example.com', sheetUrl: '' } };
   genRecurring(db);
   return db;
 }
@@ -157,7 +160,7 @@ async function api(action, d) {
   if (cfg && cfg.demo) return demoApi.call(action, d);
   let res;
   try {
-    res = await fetch(cfg.u, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ token: cfg.t, action, data: d || {} }), redirect: 'follow' });
+    res = await fetch(apiUrl(), { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ token: cfg ? cfg.t : '', action, data: d || {} }), redirect: 'follow' });
   } catch (e) { const err = new Error('Hors-ligne'); err.offline = true; throw err; }
   let j;
   try { j = await res.json(); } catch (e) { const err = new Error('Réponse illisible du serveur (déploiement Apps Script ?)'); err.server = true; throw err; }
@@ -209,6 +212,7 @@ function applyOp(db, action, d, isServer) {
       if (!isServer) genRecurring(db);
       return { id: d.id };
     }
+    case 'setCredentials': db.account = { email: d.email }; return { email: d.email };
     case 'deleteRecurrente': { const r = (db.recurrentes || []).find((x) => x.id === d.id); if (r) r.actif = false; return { id: d.id }; }
     default: throw serverErr('Action inconnue');
   }
@@ -388,6 +392,11 @@ function viewHome() {
       <span class="ico" style="background:${tint(c.couleur)}">${esc(c.emoji)}</span>
       <span style="min-width:0"><span class="t">${esc(r.nom)}</span><span class="s">le ${recDay(r, m)} · ${esc(c.nom)}</span></span>
       <span class="a num" style="color:var(--ink-2)">${eur(r.montant)}</span></div>`; }).join('')}</div>`;
+  }
+
+  if (!(data.account && data.account.email)) {
+    html += `<button class="card" data-act="open-cred" style="display:flex;gap:12px;align-items:center;width:100%;text-align:left">
+      <span style="font-size:30px">🔐</span><span><b>Crée ton identifiant</b><br><span style="color:var(--muted);font-size:14px">E-mail + mot de passe, enregistrés par ton téléphone pour te reconnecter en un geste</span></span></button>`;
   }
 
   if (!data.budgets.some((b) => b.montant > 0)) {
@@ -585,10 +594,11 @@ function viewSettings() {
 
   <div class="section-title">Appareil</div>
   <div class="card">
-    <div class="set-row" style="padding-top:0"><span class="ico" style="background:var(--primary-soft)">👤</span><span class="t">Connecté en tant que<small>${esc(data.user)}${cfg && cfg.demo ? ' (mode démo)' : ''}</small></span></div>
+    <button class="set-row" data-act="open-cred" style="padding-top:0"><span class="ico" style="background:var(--primary-soft)">🔐</span><span class="t">Identifiant de connexion<small>${data.account && data.account.email ? esc(data.account.email) : 'Pas encore créé'}</small></span><span class="v">${data.account && data.account.email ? 'Modifier' : 'Créer'}</span><span class="chev">›</span></button>
+    <div class="set-row"><span class="ico" style="background:var(--primary-soft)">👤</span><span class="t">Connecté en tant que<small>${esc(data.user)}${cfg && cfg.demo ? ' (mode démo)' : ''}</small></span></div>
     ${data.config.sheetUrl ? `<a class="set-row" href="${esc(data.config.sheetUrl)}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none"><span class="ico" style="background:var(--good-soft)">📗</span><span class="t">Ouvrir le Google Sheet<small>Toutes les données, modifiables</small></span><span class="chev">›</span></a>` : ''}
     <button class="set-row" data-act="refresh"><span class="ico" style="background:var(--surface-2)">🔄</span><span class="t">Synchroniser maintenant<small>${outbox.length ? outbox.length + ' modification(s) en attente' : 'Tout est à jour'}</small></span><span class="chev">›</span></button>
-    <button class="set-row" data-act="logout"><span class="ico" style="background:var(--critical-soft)">🚪</span><span class="t">Déconnecter cet appareil<small>Les données restent dans le Google Sheet</small></span><span class="chev">›</span></button>
+    <button class="set-row" data-act="logout"><span class="ico" style="background:var(--critical-soft)">🚪</span><span class="t">Se déconnecter<small>${data.account && data.account.email ? 'Reconnexion avec ton e-mail et ton mot de passe' : 'Crée d\'abord ton identifiant pour pouvoir te reconnecter'}</small></span><span class="chev">›</span></button>
   </div>
   <p class="hint" style="text-align:center">Notre Budget v${APP_VERSION}</p></div>`;
 }
@@ -754,6 +764,78 @@ function saveRec() {
   toast(isNew ? `✓ 🔁 ${nom} : ${eur(montant)} le ${jour}` : '✓ Prélèvement modifié');
 }
 
+/* ---------------- Feuille : identifiant & mot de passe ---------------- */
+function openCred() {
+  const email = (data.account && data.account.email) || '';
+  sheet.innerHTML = `<div class="sheet-in"><div class="grab"></div>
+    <div class="sheet-head"><h3 id="sheetTitle">${email ? 'Modifier mon identifiant' : 'Créer mon identifiant'}</h3><button class="x" data-act="close" aria-label="Fermer">✕</button></div>
+    <p class="hint" style="margin:0 2px 14px">Ton téléphone te proposera d'enregistrer ce mot de passe. À la prochaine connexion, il le remplira tout seul.</p>
+    <form id="credForm" autocomplete="on">
+      <label class="field"><span>E-mail (identifiant)</span><input type="email" name="username" id="crEmail" autocomplete="username" inputmode="email" autocapitalize="none" spellcheck="false" required value="${esc(email)}" placeholder="prenom@gmail.com"></label>
+      <label class="field"><span>Nouveau mot de passe</span><input type="password" name="new-password" id="crPwd" autocomplete="new-password" minlength="8" required placeholder="8 caractères minimum"></label>
+      <label class="field"><span>Confirmer le mot de passe</span><input type="password" name="confirm-password" id="crPwd2" autocomplete="new-password" minlength="8" required></label>
+      <div class="err" id="crErr" style="color:var(--critical);font-weight:600;font-size:14px;margin:0 2px 10px" hidden></div>
+      <button class="btn primary" type="submit">Enregistrer</button>
+    </form>
+  </div>`;
+  if (!sheet.open) sheet.showModal();
+}
+
+async function saveCred(form) {
+  const email = $('#crEmail').value.trim().toLowerCase(), pwd = $('#crPwd').value, pwd2 = $('#crPwd2').value;
+  const err = $('#crErr');
+  const fail = (m) => { err.textContent = m; err.hidden = false; };
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return fail('Adresse e-mail invalide.');
+  if (pwd.length < 8) return fail('Le mot de passe doit faire au moins 8 caractères.');
+  if (pwd !== pwd2) return fail('Les deux mots de passe ne sont pas identiques.');
+  const btn = $('button[type=submit]', form); btn.disabled = true; btn.textContent = 'Enregistrement…';
+  try {
+    await api('setCredentials', { email, password: pwd });
+    data.account = { email }; store.set(K.state, data);
+    await storeCredential(email, pwd);
+    sheet.close();
+    render();
+    toast('✓ Identifiant enregistré');
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'Enregistrer';
+    fail(e.offline ? 'Pas de connexion internet : réessaie dans un instant.' : e.message);
+  }
+}
+
+/** Demande au gestionnaire de mots de passe du téléphone d'enregistrer l'identifiant (Chrome/Android). */
+async function storeCredential(email, pwd) {
+  try {
+    if (window.PasswordCredential && navigator.credentials) {
+      await navigator.credentials.store(new PasswordCredential({ id: email, password: pwd, name: (data && data.user) || email }));
+    }
+  } catch (e) {}
+}
+
+async function doLogin(form) {
+  const email = $('#lgEmail').value.trim().toLowerCase(), pwd = $('#lgPwd').value;
+  const err = $('#lgErr');
+  if (!email || !pwd) { err.textContent = 'Indique ton e-mail et ton mot de passe.'; err.hidden = false; return; }
+  const btn = $('button[type=submit]', form); btn.disabled = true; btn.textContent = 'Connexion…';
+  try {
+    const r = await api('login', { email, password: pwd });
+    cfg = { u: apiUrl(), t: r.token };
+    store.set(K.cfg, cfg); store.set(K.api, cfg.u);
+    await storeCredential(email, pwd);
+    data = null; outbox = []; store.set(K.outbox, outbox);
+    ui.tab = 'home'; ui.mois = curMonth(); lastViewKey = '';
+    start();
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'Se connecter';
+    err.textContent = e.offline ? 'Impossible de joindre le serveur. Vérifie ta connexion internet.' : e.message;
+    err.hidden = false;
+  }
+}
+
+document.addEventListener('submit', (e) => {
+  if (e.target.id === 'loginForm') { e.preventDefault(); doLogin(e.target); }
+  else if (e.target.id === 'credForm') { e.preventDefault(); saveCred(e.target); }
+});
+
 /* ---------------- Toast ---------------- */
 let toastTimer;
 function toast(msg, actionLabel, action) {
@@ -805,6 +887,7 @@ document.addEventListener('click', (e) => {
     case 'cat-color': catEdit.couleur = el.dataset.v; paintCatKeep(); break;
     case 'cat-emoji': catEdit.emoji = el.dataset.v; paintCatKeep(); break;
     case 'save-cat': saveCat(); break;
+    case 'open-cred': openCred(); break;
     case 'new-rec': openRec(null); break;
     case 'edit-rec': openRec((data.recurrentes || []).find((r) => r.id === id)); break;
     case 'rec-cat': recEdit.categorieId = id; sheet.querySelectorAll('.tile').forEach((t) => t.classList.toggle('on', t.dataset.id === id)); break;
@@ -829,7 +912,9 @@ document.addEventListener('click', (e) => {
       break;
     }
     case 'logout':
-      if (confirm('Déconnecter cet appareil ? Les données restent dans le Google Sheet.')) {
+      if (outbox.length && !confirm(`${outbox.length} modification(s) pas encore envoyée(s) seront perdues. Continuer ?`)) break;
+      if (confirm(data.account && data.account.email ? 'Se déconnecter ? Tu pourras te reconnecter avec ton e-mail et ton mot de passe.' : 'Se déconnecter ? Tu n\'as pas encore créé d\'identifiant : il faudra ton lien d\'installation pour revenir.')) {
+        if (cfg && cfg.u) store.set(K.api, cfg.u);
         [K.cfg, K.state, K.outbox, K.demo].forEach(store.del);
         cfg = null; data = null; outbox = [];
         showSetup();
@@ -896,20 +981,25 @@ function showSetup(err) {
   s.hidden = false;
   s.innerHTML = `<div class="logo">€</div>
     <h1>Notre Budget</h1>
-    <p>Pour connecter ce téléphone, ouvre le <b>lien d'installation</b> généré depuis le Google Sheet (menu 💰 Budget › Liens d'installation).</p>
-    ${err ? `<div class="err">${esc(err)}</div>` : ''}
-    <details ${err ? 'open' : ''}><summary>Saisir l'adresse et le code à la main</summary>
-      <label class="field"><span>Adresse de l'API (Apps Script)</span><input type="url" id="setU" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"></label>
-      <label class="field"><span>Code d'accès</span><input type="text" id="setT" autocomplete="off" spellcheck="false"></label>
-      <button class="btn primary" data-act="connect">Se connecter</button>
+    <p>Connecte-toi avec ton e-mail et ton mot de passe.</p>
+    <form id="loginForm" autocomplete="on">
+      <label class="field"><span>E-mail</span><input type="email" name="username" id="lgEmail" autocomplete="username" inputmode="email" autocapitalize="none" spellcheck="false" required placeholder="prenom@gmail.com"></label>
+      <label class="field"><span>Mot de passe</span><input type="password" name="password" id="lgPwd" autocomplete="current-password" required></label>
+      <div class="err" id="lgErr" ${err ? '' : 'hidden'}>${esc(err || '')}</div>
+      <button class="btn primary" type="submit">Se connecter</button>
+    </form>
+    <details><summary>Première connexion ou mot de passe oublié ?</summary>
+      <p style="margin:0 0 12px">Dans le Google Sheet, ouvre le menu <b>💰 Budget › Liens d'installation</b> et ouvre ton lien sur ce téléphone. Tu pourras ensuite créer ou changer ton mot de passe dans <b>Réglages</b>.</p>
+      <label class="field"><span>Ou colle ici ton code d'accès</span><input type="text" id="setT" autocomplete="off" spellcheck="false" autocapitalize="none"></label>
+      <button class="btn ghost" type="button" data-act="connect">Se connecter avec le code</button>
     </details>
     <button class="btn ghost" style="margin-top:22px" data-act="demo">👀 Découvrir avec des données de démo</button>`;
 }
 
 async function connectManual() {
-  const u = $('#setU').value.trim(), t = $('#setT').value.trim();
-  if (!/^https:\/\/script\.google(usercontent)?\.com\//.test(u) || !t) { showSetup('Adresse ou code invalide.'); return; }
-  cfg = { u, t };
+  const t = $('#setT').value.trim();
+  if (!t) { showSetup('Code d\'accès manquant.'); return; }
+  cfg = { u: apiUrl(), t };
   store.set(K.cfg, cfg);
   start();
 }
@@ -940,7 +1030,7 @@ async function start() {
 /* ---------------- Démarrage ---------------- */
 (function init() {
   const fromHash = readHashConfig();
-  if (fromHash) { cfg = fromHash; store.set(K.cfg, cfg); data = null; store.del(K.state); outbox = []; store.set(K.outbox, outbox); }
+  if (fromHash) { cfg = fromHash; store.set(K.cfg, cfg); store.set(K.api, cfg.u); data = null; store.del(K.state); outbox = []; store.set(K.outbox, outbox); }
   if ((/[?&]demo=1/.test(location.search) || window.__DEMO__) && !fromHash) { cfg = { demo: true }; store.set(K.cfg, cfg); }
   if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
   start();

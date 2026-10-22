@@ -136,7 +136,8 @@ main { padding: 4px 16px calc(var(--tabbar-h) + env(safe-area-inset-bottom) + 28
 .badge-over { display: inline-block; font-size: 11px; font-weight: 700; color: var(--critical); background: var(--critical-soft); padding: 2px 7px; border-radius: 99px; margin-left: 6px; vertical-align: 1px; }
 
 /* ---------- Expense rows ---------- */
-.day-head { display: flex; justify-content: space-between; font-size: 13px; font-weight: 700; color: var(--muted); margin: 18px 6px 6px; text-transform: capitalize; }
+.day-head { display: flex; justify-content: space-between; font-size: 13px; font-weight: 700; color: var(--muted); margin: 18px 6px 6px; }
+.day-head > span:first-child::first-letter { text-transform: uppercase; }
 .exp { display: grid; grid-template-columns: 40px 1fr auto; gap: 12px; align-items: center; padding: 10px 12px; width: 100%; text-align: left; }
 .exp + .exp { border-top: 1px solid var(--line); }
 .exp:active { background: var(--surface-2); }
@@ -234,7 +235,7 @@ dialog.sheet::backdrop { background: rgba(10, 8, 30, .45); overflow: hidden; ove
 .mv:disabled { opacity: .3; }
 .field { display: block; margin-bottom: 12px; }
 .field > span { display: block; font-size: 13px; font-weight: 700; color: var(--ink-2); margin: 0 2px 6px; }
-.field input[type=text], .field input[type=email], .field input[type=url], .field input:not([type]), .field textarea {
+.field input[type=text], .field input[type=email], .field input[type=url], .field input[type=password], .field input:not([type]), .field textarea {
   width: 100%; padding: 12px 14px; border-radius: 14px; border: 1px solid var(--line); background: var(--surface); outline: none;
 }
 .field input:focus, .field textarea:focus { border-color: var(--primary); }
